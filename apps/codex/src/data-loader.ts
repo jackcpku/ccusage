@@ -370,13 +370,13 @@ async function listSessionFiles(directoryPath: string): Promise<SessionFileCandi
 
 	return files
 		.map((file) => {
-		const relativeSessionPath = path.relative(directoryPath, file);
-		const normalizedSessionPath = relativeSessionPath.split(path.sep).join('/');
-		return {
-			file,
-			relativeSessionPath: normalizedSessionPath,
-			sessionId: normalizedSessionPath.replace(/\.jsonl$/i, ''),
-		};
+			const relativeSessionPath = path.relative(directoryPath, file);
+			const normalizedSessionPath = relativeSessionPath.split(path.sep).join('/');
+			return {
+				file,
+				relativeSessionPath: normalizedSessionPath,
+				sessionId: normalizedSessionPath.replace(/\.jsonl$/i, ''),
+			};
 		})
 		.sort((a, b) => a.relativeSessionPath.localeCompare(b.relativeSessionPath));
 }
@@ -903,6 +903,177 @@ if (import.meta.vitest != null) {
 			expect(events).toHaveLength(1);
 			expect(events[0]!.sessionId).toBe('2025/09/12/new');
 			expect(events[0]!.model).toBe('gpt-5-mini');
+		});
+
+		it('advances the cumulative baseline after last_token_usage-only events', async () => {
+			await using fixture = await createFixture({
+				sessions: {
+					'mixed-baseline.jsonl': [
+						JSON.stringify({
+							timestamp: '2025-09-15T13:00:00.000Z',
+							type: 'turn_context',
+							payload: {
+								model: 'gpt-5',
+							},
+						}),
+						JSON.stringify({
+							timestamp: '2025-09-15T13:00:01.000Z',
+							type: 'event_msg',
+							payload: {
+								type: 'token_count',
+								info: {
+									last_token_usage: {
+										input_tokens: 10,
+										cached_input_tokens: 0,
+										output_tokens: 5,
+										reasoning_output_tokens: 0,
+										total_tokens: 15,
+									},
+									model: 'gpt-5',
+								},
+							},
+						}),
+						JSON.stringify({
+							timestamp: '2025-09-15T13:00:02.000Z',
+							type: 'event_msg',
+							payload: {
+								type: 'token_count',
+								info: {
+									total_token_usage: {
+										input_tokens: 20,
+										cached_input_tokens: 0,
+										output_tokens: 10,
+										reasoning_output_tokens: 0,
+										total_tokens: 30,
+									},
+									model: 'gpt-5',
+								},
+							},
+						}),
+					].join('\n'),
+				},
+			});
+
+			const { events } = await loadTokenUsageEvents({
+				sessionDirs: [fixture.getPath('sessions')],
+			});
+
+			expect(events).toHaveLength(2);
+			expect(events.map((event) => event.totalTokens)).toEqual([15, 15]);
+		});
+
+		it('prefers cumulative total deltas when total_token_usage is present', async () => {
+			await using fixture = await createFixture({
+				sessions: {
+					'prefer-total.jsonl': [
+						JSON.stringify({
+							timestamp: '2025-09-15T13:00:00.000Z',
+							type: 'turn_context',
+							payload: {
+								model: 'gpt-5',
+							},
+						}),
+						JSON.stringify({
+							timestamp: '2025-09-15T13:00:01.000Z',
+							type: 'event_msg',
+							payload: {
+								type: 'token_count',
+								info: {
+									last_token_usage: {
+										input_tokens: 10,
+										cached_input_tokens: 0,
+										output_tokens: 5,
+										reasoning_output_tokens: 0,
+										total_tokens: 15,
+									},
+									total_token_usage: {
+										input_tokens: 10,
+										cached_input_tokens: 0,
+										output_tokens: 5,
+										reasoning_output_tokens: 0,
+										total_tokens: 15,
+									},
+									model: 'gpt-5',
+								},
+							},
+						}),
+						JSON.stringify({
+							timestamp: '2025-09-15T13:00:02.000Z',
+							type: 'event_msg',
+							payload: {
+								type: 'token_count',
+								info: {
+									last_token_usage: {
+										input_tokens: 10,
+										cached_input_tokens: 0,
+										output_tokens: 5,
+										reasoning_output_tokens: 0,
+										total_tokens: 15,
+									},
+									total_token_usage: {
+										input_tokens: 10,
+										cached_input_tokens: 0,
+										output_tokens: 5,
+										reasoning_output_tokens: 0,
+										total_tokens: 15,
+									},
+									model: 'gpt-5',
+								},
+							},
+						}),
+					].join('\n'),
+				},
+			});
+
+			const { events } = await loadTokenUsageEvents({
+				sessionDirs: [fixture.getPath('sessions')],
+			});
+
+			expect(events).toHaveLength(1);
+			expect(events[0]!.totalTokens).toBe(15);
+		});
+
+		it('propagates onEvent callback failures', async () => {
+			await using fixture = await createFixture({
+				sessions: {
+					'callback-error.jsonl': [
+						JSON.stringify({
+							timestamp: '2025-09-15T13:00:00.000Z',
+							type: 'turn_context',
+							payload: {
+								model: 'gpt-5',
+							},
+						}),
+						JSON.stringify({
+							timestamp: '2025-09-15T13:00:01.000Z',
+							type: 'event_msg',
+							payload: {
+								type: 'token_count',
+								info: {
+									last_token_usage: {
+										input_tokens: 10,
+										cached_input_tokens: 0,
+										output_tokens: 5,
+										reasoning_output_tokens: 0,
+										total_tokens: 15,
+									},
+									model: 'gpt-5',
+								},
+							},
+						}),
+					].join('\n'),
+				},
+			});
+
+			await expect(
+				loadTokenUsageEvents({
+					sessionDirs: [fixture.getPath('sessions')],
+					collectEvents: false,
+					onEvent: async () => {
+						throw new Error('boom');
+					},
+				}),
+			).rejects.toThrow('boom');
 		});
 
 		it('deduplicates replayed fork prefixes from child sessions', async () => {
