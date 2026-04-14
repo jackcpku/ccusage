@@ -111,6 +111,17 @@ function subtractRawUsage(current: RawUsage, previous: RawUsage | null): RawUsag
 	};
 }
 
+function addRawUsage(previous: RawUsage | null, delta: RawUsage): RawUsage {
+	return {
+		input_tokens: (previous?.input_tokens ?? 0) + delta.input_tokens,
+		cached_input_tokens: (previous?.cached_input_tokens ?? 0) + delta.cached_input_tokens,
+		output_tokens: (previous?.output_tokens ?? 0) + delta.output_tokens,
+		reasoning_output_tokens:
+			(previous?.reasoning_output_tokens ?? 0) + delta.reasoning_output_tokens,
+		total_tokens: (previous?.total_tokens ?? 0) + delta.total_tokens,
+	};
+}
+
 /**
  * Convert cumulative usage into a per-event delta.
  *
@@ -294,13 +305,17 @@ function parseTokenUsageEvent(
 	const totalUsage = normalizeRawUsage(info?.total_token_usage);
 	const cumulativeTotalTokens = totalUsage?.total_tokens;
 
-	let raw = lastUsage;
-	if (raw == null && totalUsage != null) {
+	let raw: RawUsage | null = null;
+	if (totalUsage != null) {
 		raw = subtractRawUsage(totalUsage, state.previousTotals);
+	} else if (lastUsage != null) {
+		raw = lastUsage;
 	}
 
 	if (totalUsage != null) {
 		state.previousTotals = totalUsage;
+	} else if (lastUsage != null) {
+		state.previousTotals = addRawUsage(state.previousTotals, lastUsage);
 	}
 
 	if (raw == null) {
@@ -592,6 +607,7 @@ export async function loadTokenUsageEvents(options: LoadOptions = {}): Promise<L
 				input: createReadStream(file, { encoding: 'utf8' }),
 				crlfDelay: Infinity,
 			});
+			let callbackError: unknown;
 
 			try {
 				for await (const line of lines) {
@@ -635,10 +651,18 @@ export async function loadTokenUsageEvents(options: LoadOptions = {}): Promise<L
 					}
 
 					if (options.onEvent != null) {
-						await options.onEvent(event);
+						try {
+							await options.onEvent(event);
+						} catch (error) {
+							callbackError = error;
+							throw error;
+						}
 					}
 				}
 			} catch (error) {
+				if (callbackError != null) {
+					throw callbackError;
+				}
 				logger.debug('Failed to stream Codex session file', error);
 				continue;
 			} finally {
